@@ -50,11 +50,15 @@ async function run() {
         if (!ObjectId.isValid(id)) {
           return res.status(400).json({ error: "Invalid product ID" });
         }
+
         const product = await productsCollection.findOne({
           _id: new ObjectId(id),
         });
-        if (!product)
+
+        if (!product) {
           return res.status(404).json({ error: "Product not found" });
+        }
+
         res.json(product);
       } catch (error) {
         res.status(500).json({ error: "Server error" });
@@ -76,13 +80,6 @@ async function run() {
       const id = req.params.id;
       const { userEmail } = req.body;
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({ error: "Invalid product ID" });
-      }
-      if (!userEmail) {
-        return res.status(400).json({ error: "userEmail required" });
-      }
-
       const result = await productsCollection.updateOne(
         { _id: new ObjectId(id), voters: { $ne: userEmail } },
         {
@@ -91,26 +88,13 @@ async function run() {
         }
       );
 
-      if (result.matchedCount === 0) {
-        return res
-          .status(400)
-          .json({ error: "Already voted or product not found" });
-      }
-
-      res.json({ message: "Upvoted successfully" });
+      res.json(result);
     });
 
     // POST report product
     app.post("/products/report/:id", async (req, res) => {
       const id = req.params.id;
       const { userEmail } = req.body;
-
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({ error: "Invalid product ID" });
-      }
-      if (!userEmail) {
-        return res.status(400).json({ error: "userEmail required" });
-      }
 
       await reportsCollection.insertOne({
         productId: new ObjectId(id),
@@ -142,16 +126,6 @@ async function run() {
     app.post("/reviews", async (req, res) => {
       try {
         const review = req.body;
-        if (
-          !review.productId ||
-          !review.reviewerName ||
-          !review.description ||
-          !review.rating
-        ) {
-          return res
-            .status(400)
-            .json({ error: "Missing required review fields" });
-        }
 
         review.productId = new ObjectId(review.productId);
         review.createdAt = new Date();
