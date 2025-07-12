@@ -22,60 +22,67 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     await client.connect();
-    const database = client.db("appOrbitDB");
-    const productsCollection = database.collection("products");
-    const reviewsCollection = database.collection("reviews");
-    const reportsCollection = database.collection("reports");
+    const db = client.db("appOrbitDB");
+    const productsCollection = db.collection("products");
+    const reviewsCollection = db.collection("reviews");
+    const reportsCollection = db.collection("reports");
 
-    // GET all products
+    // ✅ GET paginated products
     app.get("/products", async (req, res) => {
-      const products = await productsCollection.find().toArray();
-      res.json(products);
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 6;
+      const skip = (page - 1) * limit;
+
+      const total = await productsCollection.countDocuments();
+      const products = await productsCollection
+        .find()
+        .sort({ timestamp: -1 }) // latest first
+        .skip(skip)
+        .limit(limit)
+        .toArray();
+
+      res.send({ products, total });
     });
 
-    // GET featured products (limit 6, sorted by timestamp desc)
+    // ✅ GET featured products (limit 6)
     app.get("/products/featured", async (req, res) => {
       const featured = await productsCollection
         .find({ isFeatured: true })
         .sort({ timestamp: -1 })
         .limit(6)
         .toArray();
-      res.json(featured);
+      res.send(featured);
     });
 
-    // GET product by id
+    // ✅ GET single product by ID
     app.get("/products/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({ error: "Invalid product ID" });
-        }
-
-        const product = await productsCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
-        if (!product) {
-          return res.status(404).json({ error: "Product not found" });
-        }
-
-        res.json(product);
-      } catch (error) {
-        res.status(500).json({ error: "Server error" });
+      const id = req.params.id;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({ error: "Invalid product ID" });
       }
+
+      const product = await productsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!product) {
+        return res.status(404).json({ error: "Product not found" });
+      }
+
+      res.send(product);
     });
 
-    // POST add new product
+    // ✅ POST new product
     app.post("/products", async (req, res) => {
       const product = req.body;
       product.timestamp = new Date();
       product.upvotes = 0;
       product.voters = [];
       const result = await productsCollection.insertOne(product);
-      res.json(result);
+      res.send(result);
     });
 
-    // PATCH upvote product
+    // ✅ PATCH: upvote product
     app.patch("/products/upvote/:id", async (req, res) => {
       const id = req.params.id;
       const { userEmail } = req.body;
@@ -88,10 +95,10 @@ async function run() {
         }
       );
 
-      res.json(result);
+      res.send(result);
     });
 
-    // POST report product
+    // ✅ POST: report product
     app.post("/products/report/:id", async (req, res) => {
       const id = req.params.id;
       const { userEmail } = req.body;
@@ -102,39 +109,32 @@ async function run() {
         reportedAt: new Date(),
       });
 
-      res.json({ message: "Reported successfully" });
+      res.send({ message: "Reported successfully" });
     });
 
-    // GET reviews for a product
+    // ✅ GET: reviews for a product
     app.get("/reviews/:productId", async (req, res) => {
-      try {
-        const { productId } = req.params;
-        if (!ObjectId.isValid(productId)) {
-          return res.status(400).json({ error: "Invalid product ID" });
-        }
-        const reviews = await reviewsCollection
-          .find({ productId: new ObjectId(productId) })
-          .sort({ createdAt: -1 })
-          .toArray();
-        res.json(reviews);
-      } catch (error) {
-        res.status(500).json({ message: "Failed to get reviews", error });
+      const productId = req.params.productId;
+      if (!ObjectId.isValid(productId)) {
+        return res.status(400).json({ error: "Invalid product ID" });
       }
+
+      const reviews = await reviewsCollection
+        .find({ productId: new ObjectId(productId) })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(reviews);
     });
 
-    // POST a new review
+    // ✅ POST: add review
     app.post("/reviews", async (req, res) => {
-      try {
-        const review = req.body;
+      const review = req.body;
+      review.productId = new ObjectId(review.productId);
+      review.createdAt = new Date();
 
-        review.productId = new ObjectId(review.productId);
-        review.createdAt = new Date();
-
-        const insertRes = await reviewsCollection.insertOne(review);
-        res.json(insertRes);
-      } catch (error) {
-        res.status(500).json({ message: "Failed to add review", error });
-      }
+      const result = await reviewsCollection.insertOne(review);
+      res.send(result);
     });
 
     await client.db("admin").command({ ping: 1 });
