@@ -29,17 +29,18 @@ async function run() {
 
     // ✅ GET paginated products
     app.get("/products", async (req, res) => {
-      const page = parseInt(req.query.page) || 1;
-      const limit = parseInt(req.query.limit) || 6;
-      const skip = (page - 1) * limit;
+      const { page = 1, limit = 6, search = "" } = req.query;
+      const query = search
+        ? { name: { $regex: search, $options: "i" } } // case-insensitive search on name
+        : {};
 
-      const total = await productsCollection.countDocuments();
       const products = await productsCollection
-        .find()
-        .sort({ timestamp: -1 }) // latest first
-        .skip(skip)
-        .limit(limit)
+        .find(query)
+        .skip((page - 1) * limit)
+        .limit(parseInt(limit))
         .toArray();
+
+      const total = await productsCollection.countDocuments(query);
 
       res.send({ products, total });
     });
@@ -98,7 +99,6 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ POST: report product
     app.post("/products/report/:id", async (req, res) => {
       const id = req.params.id;
       const { userEmail } = req.body;
