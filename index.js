@@ -6,6 +6,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 3000;
 
+const stripe = require("stripe")(process.env.SECRET_KEY);
 app.use(cors());
 app.use(express.json());
 
@@ -30,9 +31,7 @@ async function run() {
     // ✅ GET paginated products
     app.get("/products", async (req, res) => {
       const { page = 1, limit = 6, search = "" } = req.query;
-      const query = search
-        ? { name: { $regex: search, $options: "i" } } // case-insensitive search on name
-        : {};
+      const query = search ? { name: { $regex: search, $options: "i" } } : {};
 
       const products = await productsCollection
         .find(query)
@@ -135,6 +134,39 @@ async function run() {
 
       const result = await reviewsCollection.insertOne(review);
       res.send(result);
+    });
+
+    //payment mathod 
+
+    app.post("/create-checkout-session", async (req, res) => {
+      const { amount, userEmail } = req.body;
+
+      try {
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ["card"],
+          mode: "payment",
+          line_items: [
+            {
+              price_data: {
+                currency: "usd",
+                product_data: {
+                  name: "Membership Subscription",
+                },
+                unit_amount: amount * 100,
+              },
+              quantity: 1,
+            },
+          ],
+          customer_email: userEmail,
+          success_url: "http://localhost:5173/payment-success",
+          cancel_url: "http://localhost:5173/payment-cancel",
+        });
+
+        res.send({ url: session.url });
+      } catch (err) {
+        console.error("Stripe Error:", err.message);
+        res.status(500).send({ error: err.message });
+      }
     });
 
     await client.db("admin").command({ ping: 1 });
