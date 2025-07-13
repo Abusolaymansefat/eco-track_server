@@ -24,28 +24,73 @@ async function run() {
   try {
     await client.connect();
     const db = client.db("appOrbitDB");
+    const usersCollection = db.collection("users");
     const productsCollection = db.collection("products");
     const reviewsCollection = db.collection("reviews");
     const reportsCollection = db.collection("reports");
-    const usersCollection = db.collection("users");
     const paymentsCollection = db.collection("payments");
 
-    // 🔹 GET paginated products
+    // ✅ USERS
+    app.get("/users", async (req, res) => {
+      const users = await usersCollection.find().toArray();
+      res.send(users);
+    });
+
+    app.get("/user/:email", async (req, res) => {
+      const email = req.params.email;
+      const user = await usersCollection.findOne({ email });
+      res.send(user);
+    });
+
+    // ✅ Save user to MongoDB
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+
+      const existingUser = await usersCollection.findOne({ email: user.email });
+      if (existingUser) {
+        return res.status(409).send({ message: "User already exists" });
+      }
+
+      const result = await usersCollection.insertOne(user);
+      res.send(result);
+    });
+    app.get("/users/admin/:email", async (req, res) => {
+      const email = req.params.email;
+      const user = await usersCollection.findOne({ email });
+      res.send({ isAdmin: user?.role === "admin" });
+    });
+
+    app.patch("/users/admin/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { role: "admin" } }
+      );
+      res.send(result);
+    });
+
+    app.patch("/subscribe/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { isSubscribed: true } }
+      );
+      res.send(result);
+    });
+
+    // ✅ PRODUCTS
     app.get("/products", async (req, res) => {
       const { page = 1, limit = 6, search = "" } = req.query;
       const query = search ? { name: { $regex: search, $options: "i" } } : {};
-
       const products = await productsCollection
         .find(query)
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
         .toArray();
-
       const total = await productsCollection.countDocuments(query);
       res.send({ products, total });
     });
 
-    // 🔹 GET featured products
     app.get("/products/featured", async (req, res) => {
       const featured = await productsCollection
         .find({ isFeatured: true })
@@ -55,12 +100,10 @@ async function run() {
       res.send(featured);
     });
 
-    // 🔹 GET single product by ID
     app.get("/products/:id", async (req, res) => {
       const id = req.params.id;
       if (!ObjectId.isValid(id))
         return res.status(400).json({ error: "Invalid ID" });
-
       const product = await productsCollection.findOne({
         _id: new ObjectId(id),
       });
@@ -68,7 +111,6 @@ async function run() {
       res.send(product);
     });
 
-    // 🔹 POST new product
     app.post("/products", async (req, res) => {
       const product = req.body;
       product.timestamp = new Date();
@@ -78,34 +120,28 @@ async function run() {
       res.send(result);
     });
 
-    // 🔹 PATCH upvote
     app.patch("/products/upvote/:id", async (req, res) => {
       const { id } = req.params;
       const { userEmail } = req.body;
-
       const result = await productsCollection.updateOne(
         { _id: new ObjectId(id), voters: { $ne: userEmail } },
         { $inc: { upvotes: 1 }, $push: { voters: userEmail } }
       );
-
       res.send(result);
     });
 
-    // 🔹 Report a product
     app.post("/products/report/:id", async (req, res) => {
-      const id = req.params.id;
+      const { id } = req.params;
       const { userEmail } = req.body;
-
-      await reportsCollection.insertOne({
+      const result = await reportsCollection.insertOne({
         productId: new ObjectId(id),
         reporterEmail: userEmail,
         reportedAt: new Date(),
       });
-
-      res.send({ message: "Reported successfully" });
+      res.send(result);
     });
 
-    // 🔹 GET reviews
+    // ✅ REVIEWS
     app.get("/reviews/:productId", async (req, res) => {
       const productId = req.params.productId;
       const reviews = await reviewsCollection
@@ -115,7 +151,6 @@ async function run() {
       res.send(reviews);
     });
 
-    // 🔹 POST review
     app.post("/reviews", async (req, res) => {
       const review = req.body;
       review.productId = new ObjectId(review.productId);
@@ -124,7 +159,7 @@ async function run() {
       res.send(result);
     });
 
-    // 🔹 Validate coupon (optional, add your own logic or Stripe integration)
+    // ✅ PAYMENTS
     app.post("/validate-coupon", async (req, res) => {
       const { coupon } = req.body;
       try {
@@ -136,10 +171,8 @@ async function run() {
       }
     });
 
-    // 🔹 Create PaymentIntent (Stripe CardElement)
     app.post("/create-payment-intent", async (req, res) => {
       const { amount, email, coupon } = req.body;
-
       try {
         if (coupon) {
           const couponObj = await stripe.coupons.retrieve(coupon);
@@ -161,10 +194,8 @@ async function run() {
       }
     });
 
-    // 🔹 Save Payment
     app.post("/save-payment", async (req, res) => {
       const { userEmail, amount, transactionId, date, coupon } = req.body;
-
       const result = await paymentsCollection.insertOne({
         userEmail,
         amount,
@@ -172,11 +203,9 @@ async function run() {
         coupon: coupon || null,
         date: new Date(date),
       });
-
       res.send(result);
     });
 
-    // 🔹 Payment history
     app.get("/payment-history/:email", async (req, res) => {
       const email = req.params.email;
       const history = await paymentsCollection
@@ -186,14 +215,18 @@ async function run() {
       res.send(history);
     });
 
-    // 🔹 Update subscription status
-    app.patch("/subscribe/:email", async (req, res) => {
-      const email = req.params.email;
-      const result = await usersCollection.updateOne(
-        { email },
-        { $set: { isSubscribed: true } }
-      );
-      res.send(result);
+    // ✅ Admin Statistics
+    app.get("/admin/statistics", async (req, res) => {
+      const totalUsers = await usersCollection.estimatedDocumentCount();
+      const totalProducts = await productsCollection.estimatedDocumentCount();
+      const totalPayments = await paymentsCollection.find().toArray();
+      const totalRevenue = totalPayments.reduce((sum, p) => sum + p.amount, 0);
+      res.send({
+        totalUsers,
+        totalProducts,
+        totalPayments: totalPayments.length,
+        totalRevenue,
+      });
     });
 
     await client.db("admin").command({ ping: 1 });
