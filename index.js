@@ -27,8 +27,10 @@ async function run() {
     const productsCollection = db.collection("products");
     const reviewsCollection = db.collection("reviews");
     const reportsCollection = db.collection("reports");
+    const usersCollection = db.collection("users");
+    const paymentsCollection = db.collection("payments");
 
-    // ✅ GET paginated products
+    // 🔹 GET paginated products
     app.get("/products", async (req, res) => {
       const { page = 1, limit = 6, search = "" } = req.query;
       const query = search ? { name: { $regex: search, $options: "i" } } : {};
@@ -40,11 +42,10 @@ async function run() {
         .toArray();
 
       const total = await productsCollection.countDocuments(query);
-
       res.send({ products, total });
     });
 
-    // ✅ GET featured products (limit 6)
+    // 🔹 GET featured products
     app.get("/products/featured", async (req, res) => {
       const featured = await productsCollection
         .find({ isFeatured: true })
@@ -54,25 +55,20 @@ async function run() {
       res.send(featured);
     });
 
-    // ✅ GET single product by ID
+    // 🔹 GET single product by ID
     app.get("/products/:id", async (req, res) => {
       const id = req.params.id;
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({ error: "Invalid product ID" });
-      }
+      if (!ObjectId.isValid(id))
+        return res.status(400).json({ error: "Invalid ID" });
 
       const product = await productsCollection.findOne({
         _id: new ObjectId(id),
       });
-
-      if (!product) {
-        return res.status(404).json({ error: "Product not found" });
-      }
-
+      if (!product) return res.status(404).json({ error: "Product not found" });
       res.send(product);
     });
 
-    // ✅ POST new product
+    // 🔹 POST new product
     app.post("/products", async (req, res) => {
       const product = req.body;
       product.timestamp = new Date();
@@ -82,22 +78,20 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ PATCH: upvote product
+    // 🔹 PATCH upvote
     app.patch("/products/upvote/:id", async (req, res) => {
-      const id = req.params.id;
+      const { id } = req.params;
       const { userEmail } = req.body;
 
       const result = await productsCollection.updateOne(
         { _id: new ObjectId(id), voters: { $ne: userEmail } },
-        {
-          $inc: { upvotes: 1 },
-          $push: { voters: userEmail },
-        }
+        { $inc: { upvotes: 1 }, $push: { voters: userEmail } }
       );
 
       res.send(result);
     });
 
+    // 🔹 Report a product
     app.post("/products/report/:id", async (req, res) => {
       const id = req.params.id;
       const { userEmail } = req.body;
@@ -111,62 +105,95 @@ async function run() {
       res.send({ message: "Reported successfully" });
     });
 
-    // ✅ GET: reviews for a product
+    // 🔹 GET reviews
     app.get("/reviews/:productId", async (req, res) => {
       const productId = req.params.productId;
-      if (!ObjectId.isValid(productId)) {
-        return res.status(400).json({ error: "Invalid product ID" });
-      }
-
       const reviews = await reviewsCollection
         .find({ productId: new ObjectId(productId) })
         .sort({ createdAt: -1 })
         .toArray();
-
       res.send(reviews);
     });
 
-    // ✅ POST: add review
+    // 🔹 POST review
     app.post("/reviews", async (req, res) => {
       const review = req.body;
       review.productId = new ObjectId(review.productId);
       review.createdAt = new Date();
-
       const result = await reviewsCollection.insertOne(review);
       res.send(result);
     });
 
-    //payment mathod 
+    // 🔹 Validate coupon (optional, add your own logic or Stripe integration)
+    app.post("/validate-coupon", async (req, res) => {
+      const { coupon } = req.body;
+      try {
+        const couponObj = await stripe.coupons.retrieve(coupon);
+        if (!couponObj?.valid) return res.send({ valid: false });
+        res.send({ valid: true, discountPercent: couponObj.percent_off });
+      } catch {
+        res.send({ valid: false });
+      }
+    });
 
-    app.post("/create-checkout-session", async (req, res) => {
-      const { amount, userEmail } = req.body;
+    // 🔹 Create PaymentIntent (Stripe CardElement)
+    app.post("/create-payment-intent", async (req, res) => {
+      const { amount, email, coupon } = req.body;
 
       try {
-        const session = await stripe.checkout.sessions.create({
-          payment_method_types: ["card"],
-          mode: "payment",
-          line_items: [
-            {
-              price_data: {
-                currency: "usd",
-                product_data: {
-                  name: "Membership Subscription",
-                },
-                unit_amount: amount * 100,
-              },
-              quantity: 1,
-            },
-          ],
-          customer_email: userEmail,
-          success_url: "http://localhost:5173/payment-success",
-          cancel_url: "http://localhost:5173/payment-cancel",
+        if (coupon) {
+          const couponObj = await stripe.coupons.retrieve(coupon);
+          if (!couponObj?.valid) {
+            return res.status(400).send({ message: "Invalid coupon" });
+          }
+        }
+
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount,
+          currency: "usd",
+          metadata: { email },
         });
 
-        res.send({ url: session.url });
+        res.send({ clientSecret: paymentIntent.client_secret });
       } catch (err) {
-        console.error("Stripe Error:", err.message);
-        res.status(500).send({ error: err.message });
+        console.error("Intent error:", err);
+        res.status(500).send({ message: "Payment intent failed" });
       }
+    });
+
+    // 🔹 Save Payment
+    app.post("/save-payment", async (req, res) => {
+      const { userEmail, amount, transactionId, date, coupon } = req.body;
+
+      const result = await paymentsCollection.insertOne({
+        userEmail,
+        amount,
+        transactionId,
+        coupon: coupon || null,
+        date: new Date(date),
+      });
+
+      res.send(result);
+    });
+
+    // 🔹 Payment history
+    app.get("/payment-history/:email", async (req, res) => {
+      const email = req.params.email;
+      const history = await paymentsCollection
+        .find({ userEmail: email })
+        .sort({ date: -1 })
+        .toArray();
+      res.send(history);
+    });
+
+    // 🔹 Update subscription status
+    app.patch("/subscribe/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { isSubscribed: true } }
+      );
+      res.send(result);
     });
 
     await client.db("admin").command({ ping: 1 });
