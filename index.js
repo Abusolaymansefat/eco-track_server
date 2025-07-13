@@ -78,6 +78,28 @@ async function run() {
       res.send(result);
     });
 
+    app.patch("/users/remove-admin/:email", async (req, res) => {
+  const email = req.params.email;
+
+  const user = await usersCollection.findOne({ email });
+  if (!user) {
+    return res.status(404).send({ message: "User not found" });
+  }
+
+  if (user.role !== "admin") {
+    return res.send({ message: "User is not an admin" });
+  }
+
+  
+  const result = await usersCollection.updateOne(
+    { email },
+    { $unset: { role: "" } } 
+    
+  );
+
+  res.send({ message: "Admin role removed, now user is normal user", result });
+});
+
     // ✅ PRODUCTS
     app.get("/products", async (req, res) => {
       const { page = 1, limit = 6, search = "" } = req.query;
