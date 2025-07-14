@@ -70,15 +70,6 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/subscribe/:email", async (req, res) => {
-      const email = req.params.email;
-      const result = await usersCollection.updateOne(
-        { email },
-        { $set: { isSubscribed: true } }
-      );
-      res.send(result);
-    });
-
     app.patch("/users/remove-admin/:email", async (req, res) => {
       const email = req.params.email;
 
@@ -101,6 +92,24 @@ async function run() {
         result,
       });
     });
+
+    app.patch("/subscribe/:email", async (req, res) => {
+  const { email } = req.params;
+  const { isSubscribed, role, coupon } = req.body;
+
+  const result = await usersCollection.updateOne(
+    { email },
+    {
+      $set: {
+        isSubscribed: isSubscribed || false,
+        role: role || "user",
+        coupon: coupon || null,
+      },
+    }
+  );
+  res.send(result);
+});
+
 
     // ✅ PRODUCTS
     app.get("/products", async (req, res) => {
@@ -240,14 +249,21 @@ async function run() {
         res.status(500).send({ message: "Payment intent failed" });
       }
     });
-
     app.post("/save-payment", async (req, res) => {
-      const { userEmail, amount, transactionId, date, coupon } = req.body;
+      const {
+        userEmail,
+        amount,
+        transactionId,
+        date,
+        coupon,
+        discountPercent,
+      } = req.body;
       const result = await paymentsCollection.insertOne({
         userEmail,
         amount,
         transactionId,
         coupon: coupon || null,
+        discountPercent: discountPercent || null,
         date: new Date(date),
       });
       res.send(result);
