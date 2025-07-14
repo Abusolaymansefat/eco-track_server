@@ -29,6 +29,7 @@ async function run() {
     const reviewsCollection = db.collection("reviews");
     const reportsCollection = db.collection("reports");
     const paymentsCollection = db.collection("payments");
+    const couponsCollection = db.collection("coupons");
 
     // ✅ USERS
     app.get("/users", async (req, res) => {
@@ -79,26 +80,27 @@ async function run() {
     });
 
     app.patch("/users/remove-admin/:email", async (req, res) => {
-  const email = req.params.email;
+      const email = req.params.email;
 
-  const user = await usersCollection.findOne({ email });
-  if (!user) {
-    return res.status(404).send({ message: "User not found" });
-  }
+      const user = await usersCollection.findOne({ email });
+      if (!user) {
+        return res.status(404).send({ message: "User not found" });
+      }
 
-  if (user.role !== "admin") {
-    return res.send({ message: "User is not an admin" });
-  }
+      if (user.role !== "admin") {
+        return res.send({ message: "User is not an admin" });
+      }
 
-  
-  const result = await usersCollection.updateOne(
-    { email },
-    { $unset: { role: "" } } 
-    
-  );
+      const result = await usersCollection.updateOne(
+        { email },
+        { $unset: { role: "" } }
+      );
 
-  res.send({ message: "Admin role removed, now user is normal user", result });
-});
+      res.send({
+        message: "Admin role removed, now user is normal user",
+        result,
+      });
+    });
 
     // ✅ PRODUCTS
     app.get("/products", async (req, res) => {
@@ -178,6 +180,29 @@ async function run() {
       review.productId = new ObjectId(review.productId);
       review.createdAt = new Date();
       const result = await reviewsCollection.insertOne(review);
+      res.send(result);
+    });
+
+    // ✅ Get all coupons
+    app.get("/coupons", async (req, res) => {
+      const coupons = await couponsCollection.find().toArray();
+      res.send(coupons);
+    });
+
+    // ✅ Add a new coupon
+    app.post("/coupons", async (req, res) => {
+      const coupon = req.body;
+      coupon.createdAt = new Date();
+      const result = await couponsCollection.insertOne(coupon);
+      res.send(result);
+    });
+
+    // ✅ Delete a coupon
+    app.delete("/coupons/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await couponsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
       res.send(result);
     });
 
