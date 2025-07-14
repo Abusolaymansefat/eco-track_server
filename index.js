@@ -31,7 +31,7 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const couponsCollection = db.collection("coupons");
 
-    // ✅ USERS
+    // ---------- USERS ----------
     app.get("/users", async (req, res) => {
       const users = await usersCollection.find().toArray();
       res.send(users);
@@ -43,18 +43,16 @@ async function run() {
       res.send(user);
     });
 
-    // ✅ Save user to MongoDB
     app.post("/users", async (req, res) => {
       const user = req.body;
-
       const existingUser = await usersCollection.findOne({ email: user.email });
       if (existingUser) {
         return res.status(409).send({ message: "User already exists" });
       }
-
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
+
     app.get("/users/admin/:email", async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
@@ -72,46 +70,35 @@ async function run() {
 
     app.patch("/users/remove-admin/:email", async (req, res) => {
       const email = req.params.email;
-
       const user = await usersCollection.findOne({ email });
-      if (!user) {
-        return res.status(404).send({ message: "User not found" });
-      }
-
-      if (user.role !== "admin") {
+      if (!user) return res.status(404).send({ message: "User not found" });
+      if (user.role !== "admin")
         return res.send({ message: "User is not an admin" });
-      }
 
       const result = await usersCollection.updateOne(
         { email },
         { $unset: { role: "" } }
       );
-
-      res.send({
-        message: "Admin role removed, now user is normal user",
-        result,
-      });
+      res.send({ message: "Admin role removed", result });
     });
 
     app.patch("/subscribe/:email", async (req, res) => {
-  const { email } = req.params;
-  const { isSubscribed, role, coupon } = req.body;
+      const { email } = req.params;
+      const { isSubscribed, role, coupon } = req.body;
+      const result = await usersCollection.updateOne(
+        { email },
+        {
+          $set: {
+            isSubscribed: isSubscribed || false,
+            role: role || "user",
+            coupon: coupon || null,
+          },
+        }
+      );
+      res.send(result);
+    });
 
-  const result = await usersCollection.updateOne(
-    { email },
-    {
-      $set: {
-        isSubscribed: isSubscribed || false,
-        role: role || "user",
-        coupon: coupon || null,
-      },
-    }
-  );
-  res.send(result);
-});
-
-
-    // ✅ PRODUCTS
+    // ---------- PRODUCTS ----------
     app.get("/products", async (req, res) => {
       const { page = 1, limit = 6, search = "" } = req.query;
       const query = search ? { name: { $regex: search, $options: "i" } } : {};
@@ -149,6 +136,7 @@ async function run() {
       product.timestamp = new Date();
       product.upvotes = 0;
       product.voters = [];
+      product.status = "Pending"; // default
       const result = await productsCollection.insertOne(product);
       res.send(result);
     });
@@ -163,6 +151,30 @@ async function run() {
       res.send(result);
     });
 
+    app.get("/reported", async (req, res) => {
+      try {
+        const reports = await reportsCollection.find().toArray();
+        const reportedProducts = await Promise.all(
+          reports.map(async (report) => {
+            const product = await productsCollection.findOne({
+              _id: new ObjectId(report.productId),
+            });
+
+            return {
+              _id: product._id,
+              name: product.name,
+              reporterEmail: report.reporterEmail,
+            };
+          })
+        );
+
+        res.send(reportedProducts);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: "Failed to fetch reported products" });
+      }
+    });
+
     app.post("/products/report/:id", async (req, res) => {
       const { id } = req.params;
       const { userEmail } = req.body;
@@ -174,7 +186,51 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ REVIEWS
+    app.delete("/products/:id", async (req, res) => {
+      const { id } = req.params;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ error: "Invalid product ID" });
+      }
+
+      const result = await productsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      if (result.deletedCount === 0) {
+        return res.status(404).send({ error: "Product not found" });
+      }
+
+      res.send({ message: "Product deleted successfully" });
+    });
+
+    // ✅ New PATCH for "Make Featured"
+    app.patch("/products/featured/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await productsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { isFeatured: true } }
+      );
+      res.send(result);
+    });
+
+    // ✅ New PATCH for "Change Status"
+    app.patch("/products/status/:id", async (req, res) => {
+      const id = req.params.id;
+      const { status } = req.body;
+
+      if (!["Pending", "Accepted", "Rejected"].includes(status)) {
+        return res.status(400).send({ message: "Invalid status" });
+      }
+
+      const result = await productsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status } }
+      );
+      res.send(result);
+    });
+
+    // ---------- REVIEWS ----------
     app.get("/reviews/:productId", async (req, res) => {
       const productId = req.params.productId;
       const reviews = await reviewsCollection
@@ -192,13 +248,12 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ Get all coupons
+    // ---------- COUPONS ----------
     app.get("/coupons", async (req, res) => {
       const coupons = await couponsCollection.find().toArray();
       res.send(coupons);
     });
 
-    // ✅ Add a new coupon
     app.post("/coupons", async (req, res) => {
       const coupon = req.body;
       coupon.createdAt = new Date();
@@ -206,7 +261,6 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ Delete a coupon
     app.delete("/coupons/:id", async (req, res) => {
       const id = req.params.id;
       const result = await couponsCollection.deleteOne({
@@ -215,40 +269,22 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ PAYMENTS
-    app.post("/validate-coupon", async (req, res) => {
-      const { coupon } = req.body;
-      try {
-        const couponObj = await stripe.coupons.retrieve(coupon);
-        if (!couponObj?.valid) return res.send({ valid: false });
-        res.send({ valid: true, discountPercent: couponObj.percent_off });
-      } catch {
-        res.send({ valid: false });
-      }
-    });
-
+    // ---------- PAYMENTS ----------
     app.post("/create-payment-intent", async (req, res) => {
       const { amount, email, coupon } = req.body;
       try {
-        if (coupon) {
-          const couponObj = await stripe.coupons.retrieve(coupon);
-          if (!couponObj?.valid) {
-            return res.status(400).send({ message: "Invalid coupon" });
-          }
-        }
-
         const paymentIntent = await stripe.paymentIntents.create({
           amount,
           currency: "usd",
           metadata: { email },
         });
-
         res.send({ clientSecret: paymentIntent.client_secret });
       } catch (err) {
         console.error("Intent error:", err);
         res.status(500).send({ message: "Payment intent failed" });
       }
     });
+
     app.post("/save-payment", async (req, res) => {
       const {
         userEmail,
@@ -276,20 +312,6 @@ async function run() {
         .sort({ date: -1 })
         .toArray();
       res.send(history);
-    });
-
-    // ✅ Admin Statistics
-    app.get("/admin/statistics", async (req, res) => {
-      const totalUsers = await usersCollection.estimatedDocumentCount();
-      const totalProducts = await productsCollection.estimatedDocumentCount();
-      const totalPayments = await paymentsCollection.find().toArray();
-      const totalRevenue = totalPayments.reduce((sum, p) => sum + p.amount, 0);
-      res.send({
-        totalUsers,
-        totalProducts,
-        totalPayments: totalPayments.length,
-        totalRevenue,
-      });
     });
 
     await client.db("admin").command({ ping: 1 });
