@@ -9,7 +9,11 @@ const port = process.env.PORT || 3000;
 const stripe = require("stripe")(process.env.SECRET_KEY);
 app.use(cors());
 app.use(express.json());
-
+const admin = require("firebase-admin");
+const serviceAccount = require("./firebase-adminsdk.json");
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.sq4up6y.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 const client = new MongoClient(uri, {
@@ -31,6 +35,22 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const couponsCollection = db.collection("coupons");
 
+    const verifyFbToken = async (req, res, next) => {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      const token = authHeader.split(" ")[1];
+      try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.decoded = decoded;
+        next();
+      } catch (error) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+    };
+
     // ---------- USERS ----------
     app.get("/users", async (req, res) => {
       const users = await usersCollection.find().toArray();
@@ -43,7 +63,7 @@ async function run() {
       res.send(user);
     });
 
-    app.post("/users", async (req, res) => {
+    app.post("/users", verifyFbToken, async (req, res) => {
       const user = req.body;
       const existingUser = await usersCollection.findOne({ email: user.email });
       if (existingUser) {
@@ -140,6 +160,17 @@ async function run() {
       const result = await productsCollection.insertOne(product);
       res.send(result);
     });
+    app.patch("/products/:id", async (req, res) => {
+      const { id } = req.params;
+      const updateData = req.body;
+
+      const result = await productsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updateData }
+      );
+
+      res.send({ message: "Product updated successfully", result });
+    });
 
     app.patch("/products/upvote/:id", async (req, res) => {
       const { id } = req.params;
@@ -151,31 +182,17 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/reported", async (req, res) => {
+    app.get("/reports", async (req, res) => {
       try {
         const reports = await reportsCollection.find().toArray();
-        const reportedProducts = await Promise.all(
-          reports.map(async (report) => {
-            const product = await productsCollection.findOne({
-              _id: new ObjectId(report.productId),
-            });
-
-            return {
-              _id: product._id,
-              name: product.name,
-              reporterEmail: report.reporterEmail,
-            };
-          })
-        );
-
-        res.send(reportedProducts);
+        res.send(reports);
       } catch (error) {
-        console.error(error);
-        res.status(500).send({ error: "Failed to fetch reported products" });
+        console.error("Failed to get reports:", error);
+        res.status(500).send({ error: "Failed to get reports" });
       }
     });
 
-    app.post("/products/report/:id", async (req, res) => {
+    app.post("/products/reports/:id", async (req, res) => {
       const { id } = req.params;
       const { userEmail } = req.body;
       const result = await reportsCollection.insertOne({
@@ -305,13 +322,14 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/payment-history/:email", async (req, res) => {
+    app.get("/payment-history/:email", verifyFbToken, async (req, res) => {
       const email = req.params.email;
       const history = await paymentsCollection
         .find({ userEmail: email })
         .sort({ date: -1 })
         .toArray();
       res.send(history);
+      J;
     });
 
     await client.db("admin").command({ ping: 1 });
