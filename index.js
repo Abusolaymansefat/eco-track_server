@@ -8,6 +8,10 @@ const port = process.env.PORT || 3000;
 
 const stripe = require("stripe")(process.env.SECRET_KEY);
 app.use(cors());
+// app.use(cors({
+//   origin: "http://localhost:5173",
+//   credentials: true,
+// }));
 app.use(express.json());
 const admin = require("firebase-admin");
 const serviceAccount = require("./firebase-adminsdk.json");
@@ -51,19 +55,23 @@ async function run() {
       }
     };
 
-    // ---------- USERS ----------
+    /* --- User APIs --- */
+
+    // Get all users
     app.get("/users", async (req, res) => {
       const users = await usersCollection.find().toArray();
       res.send(users);
     });
 
+    // Get single user by email
     app.get("/user/:email", async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
       res.send(user);
     });
 
-    app.post("/users", verifyFbToken, async (req, res) => {
+    // Create new user (avoid duplicate)
+    app.post("/users", async (req, res) => {
       const user = req.body;
       const existingUser = await usersCollection.findOne({ email: user.email });
       if (existingUser) {
@@ -72,13 +80,13 @@ async function run() {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
-
     app.get("/users/admin/:email", async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
       res.send({ isAdmin: user?.role === "admin" });
     });
 
+    // Make user admin
     app.patch("/users/admin/:email", async (req, res) => {
       const email = req.params.email;
       const result = await usersCollection.updateOne(
@@ -88,6 +96,7 @@ async function run() {
       res.send(result);
     });
 
+    // Remove admin role
     app.patch("/users/remove-admin/:email", async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
@@ -102,6 +111,7 @@ async function run() {
       res.send({ message: "Admin role removed", result });
     });
 
+    // Update subscription status
     app.patch("/subscribe/:email", async (req, res) => {
       const { email } = req.params;
       const { isSubscribed, role, coupon } = req.body;
@@ -118,28 +128,31 @@ async function run() {
       res.send(result);
     });
 
-    // ---------- PRODUCTS ----------
+    /* --- Product APIs --- */
+
+    // Get products with pagination & search & filter by owner
     app.get("/products", async (req, res) => {
-      const { page = 1, limit = 6, search = "" } = req.query;
-      const query = search ? { name: { $regex: search, $options: "i" } } : {};
+      const { page = 1, limit = 6, search = "", ownerEmail } = req.query;
+      const query = {};
+
+      if (search) {
+        query.name = { $regex: search, $options: "i" };
+      }
+      if (ownerEmail) {
+        query.ownerEmail = ownerEmail;
+      }
+
       const products = await productsCollection
         .find(query)
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
         .toArray();
+
       const total = await productsCollection.countDocuments(query);
       res.send({ products, total });
     });
 
-    app.get("/products/featured", async (req, res) => {
-      const featured = await productsCollection
-        .find({ isFeatured: true })
-        .sort({ timestamp: -1 })
-        .limit(6)
-        .toArray();
-      res.send(featured);
-    });
-
+    // Get product by ID
     app.get("/products/:id", async (req, res) => {
       const id = req.params.id;
       if (!ObjectId.isValid(id))
@@ -151,27 +164,29 @@ async function run() {
       res.send(product);
     });
 
+    // Add new product (initial status: Pending)
     app.post("/products", async (req, res) => {
       const product = req.body;
       product.timestamp = new Date();
       product.upvotes = 0;
       product.voters = [];
-      product.status = "Pending"; // default
+      product.status = "Pending"; // default pending review
       const result = await productsCollection.insertOne(product);
       res.send(result);
     });
+
+    // Update product data by ID
     app.patch("/products/:id", async (req, res) => {
       const { id } = req.params;
       const updateData = req.body;
-
       const result = await productsCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: updateData }
       );
-
       res.send({ message: "Product updated successfully", result });
     });
 
+    // Upvote product
     app.patch("/products/upvote/:id", async (req, res) => {
       const { id } = req.params;
       const { userEmail } = req.body;
@@ -182,46 +197,56 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/reports", async (req, res) => {
-      try {
-        const reports = await reportsCollection.find().toArray();
-        res.send(reports);
-      } catch (error) {
-        console.error("Failed to get reports:", error);
-        res.status(500).send({ error: "Failed to get reports" });
-      }
-    });
-
-    app.post("/products/reports/:id", async (req, res) => {
-      const { id } = req.params;
-      const { userEmail } = req.body;
-      const result = await reportsCollection.insertOne({
-        productId: new ObjectId(id),
-        reporterEmail: userEmail,
-        reportedAt: new Date(),
-      });
-      res.send(result);
-    });
-
+    // Delete product
     app.delete("/products/:id", async (req, res) => {
       const { id } = req.params;
-
       if (!ObjectId.isValid(id)) {
         return res.status(400).send({ error: "Invalid product ID" });
       }
-
       const result = await productsCollection.deleteOne({
         _id: new ObjectId(id),
       });
-
       if (result.deletedCount === 0) {
         return res.status(404).send({ error: "Product not found" });
       }
-
       res.send({ message: "Product deleted successfully" });
     });
 
-    // ✅ New PATCH for "Make Featured"
+    // Get products for review (Pending status)
+    app.get("/products/review", async (req, res) => {
+      const products = await productsCollection
+        .find({ status: "Pending" })
+        .toArray();
+      res.send(products);
+    });
+
+    // Update product status (Approve / Reject)
+    app.patch("/products/status/:id", async (req, res) => {
+      const { id } = req.params;
+      const { status } = req.body;
+      const result = await productsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status } }
+      );
+      res.send(result);
+    });
+
+    // GET Featured Products
+    app.get("/products/featured", async (req, res) => {
+      try {
+        const featured = await productsCollection
+          .find({ isFeatured: true })
+          .sort({ timestamp: -1 })
+          .limit(6)
+          .toArray();
+        res.send(featured);
+      } catch (error) {
+        console.error("Featured products fetch error:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // PATCH to mark product as featured
     app.patch("/products/featured/:id", async (req, res) => {
       const id = req.params.id;
       const result = await productsCollection.updateOne(
@@ -231,23 +256,18 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ New PATCH for "Change Status"
-    app.patch("/products/status/:id", async (req, res) => {
-      const id = req.params.id;
-      const { status } = req.body;
+    // Mark product as featured
+    // app.patch("/products/featured/:id", async (req, res) => {
+    //   const id = req.params.id;
+    //   const result = await productsCollection.updateOne(
+    //     { _id: new ObjectId(id) },
+    //     { $set: { isFeatured: true } }
+    //   );
+    //   res.send(result);
+    // });
 
-      if (!["Pending", "Accepted", "Rejected"].includes(status)) {
-        return res.status(400).send({ message: "Invalid status" });
-      }
+    /* --- Reviews APIs --- */
 
-      const result = await productsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { status } }
-      );
-      res.send(result);
-    });
-
-    // ---------- REVIEWS ----------
     app.get("/reviews/:productId", async (req, res) => {
       const productId = req.params.productId;
       const reviews = await reviewsCollection
@@ -265,7 +285,26 @@ async function run() {
       res.send(result);
     });
 
-    // ---------- COUPONS ----------
+    /* --- Reports APIs --- */
+
+    app.get("/reports", async (req, res) => {
+      const reports = await reportsCollection.find().toArray();
+      res.send(reports);
+    });
+
+    app.post("/products/reports/:id", async (req, res) => {
+      const { id } = req.params;
+      const { userEmail } = req.body;
+      const result = await reportsCollection.insertOne({
+        productId: new ObjectId(id),
+        reporterEmail: userEmail,
+        reportedAt: new Date(),
+      });
+      res.send(result);
+    });
+
+    /* --- Coupons APIs --- */
+
     app.get("/coupons", async (req, res) => {
       const coupons = await couponsCollection.find().toArray();
       res.send(coupons);
@@ -286,9 +325,10 @@ async function run() {
       res.send(result);
     });
 
-    // ---------- PAYMENTS ----------
+    /* --- Payments APIs --- */
+
     app.post("/create-payment-intent", async (req, res) => {
-      const { amount, email, coupon } = req.body;
+      const { amount, email } = req.body;
       try {
         const paymentIntent = await stripe.paymentIntents.create({
           amount,
@@ -297,7 +337,7 @@ async function run() {
         });
         res.send({ clientSecret: paymentIntent.client_secret });
       } catch (err) {
-        console.error("Intent error:", err);
+        console.error("Payment intent error:", err);
         res.status(500).send({ message: "Payment intent failed" });
       }
     });
@@ -329,7 +369,6 @@ async function run() {
         .sort({ date: -1 })
         .toArray();
       res.send(history);
-      J;
     });
 
     await client.db("admin").command({ ping: 1 });
