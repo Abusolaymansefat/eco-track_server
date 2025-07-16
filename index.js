@@ -158,7 +158,7 @@ async function run() {
       res.send(result);
     });
 
-    /* --- Product APIs --- */
+   
 
     // Get products with pagination & search & filter by owner
     app.get("/products", async (req, res) => {
@@ -431,10 +431,10 @@ async function run() {
       }
     );
 
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } catch (error) {
     // console.error("MongoDB connection failed:", error);
   }
