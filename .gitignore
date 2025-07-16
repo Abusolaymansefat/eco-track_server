@@ -3,3 +3,4 @@ node_modules/
 dotenv
 firebase-adminsdk.json
 vercel
+.vercel
