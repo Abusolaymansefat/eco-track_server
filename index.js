@@ -8,10 +8,7 @@ const port = process.env.PORT || 3000;
 
 const stripe = require("stripe")(process.env.SECRET_KEY);
 app.use(cors());
-// app.use(cors({
-//   origin: "http://localhost:5173",
-//   credentials: true,
-// }));
+
 app.use(express.json());
 const admin = require("firebase-admin");
 const serviceAccount = require("./firebase-adminsdk.json");
@@ -55,6 +52,17 @@ async function run() {
       }
     };
 
+    const verifyAdmin = async (req, res, next) => {
+      const requesterEmail = req.decoded.email;
+      const user = await usersCollection.findOne({ email: requesterEmail });
+
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden - Admins only" });
+      }
+
+      next();
+    };
+
     /* --- User APIs --- */
 
     // Get all users
@@ -84,6 +92,22 @@ async function run() {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
       res.send({ isAdmin: user?.role === "admin" });
+    });
+    app.get("/users/role/:email", async (req, res) => {
+      const email = req.params.email;
+
+      try {
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send({ role: user.role }); // role: 'admin' / 'user' / 'Membership'
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Server Error" });
+      }
     });
 
     // Make user admin
@@ -175,16 +199,26 @@ async function run() {
       res.send(result);
     });
 
-    // Update product data by ID
-    app.patch("/products/:id", async (req, res) => {
-      const { id } = req.params;
-      const updateData = req.body;
-      const result = await productsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updateData }
-      );
-      res.send({ message: "Product updated successfully", result });
+    // ✅ Featured Products Route
+
+    app.get("/products/featured", async (req, res) => {
+      const featured = await productsCollection
+        .find({ isFeatured: true })
+        .toArray();
+      res.send(featured);
     });
+
+    // app.get("/products/featured", async (req, res) => {
+    //   try {
+    //     const featured = await productsCollection
+    //       .find({ isFeatured: true, status: "Approved" })
+    //       .toArray();
+
+    //     res.send(featured);
+    //   } catch (err) {
+    //     res.status(400).send({ error: "Could not fetch featured products" });
+    //   }
+    // });
 
     // Upvote product
     app.patch("/products/upvote/:id", async (req, res) => {
@@ -224,47 +258,52 @@ async function run() {
     app.patch("/products/status/:id", async (req, res) => {
       const { id } = req.params;
       const { status } = req.body;
+
+      const updateDoc = {
+        status,
+      };
+
+      if (status === "Approved") {
+        updateDoc.isFeatured = true;
+      }
+
       const result = await productsCollection.updateOne(
         { _id: new ObjectId(id) },
-        { $set: { status } }
+        { $set: updateDoc }
       );
+
       res.send(result);
     });
 
-    // GET Featured Products
-    app.get("/products/featured", async (req, res) => {
+    app.patch("/products/upvote/:id", async (req, res) => {
+      const { id } = req.params;
+      const { userEmail } = req.body;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid Product ID" });
+      }
+
       try {
-        const featured = await productsCollection
-          .find({ isFeatured: true })
-          .sort({ timestamp: -1 })
-          .limit(6)
-          .toArray();
-        res.send(featured);
+        const result = await productsCollection.updateOne(
+          { _id: new ObjectId(id), voters: { $ne: userEmail } },
+          {
+            $inc: { upvotes: 1 },
+            $push: { voters: userEmail },
+          }
+        );
+
+        if (result.modifiedCount === 0) {
+          return res
+            .status(400)
+            .send({ message: "Already voted or invalid product" });
+        }
+
+        res.send({ message: "Upvoted successfully", result });
       } catch (error) {
-        console.error("Featured products fetch error:", error);
-        res.status(500).send({ message: "Internal Server Error" });
+        console.error("Upvote failed:", error);
+        res.status(500).send({ message: "Internal server error" });
       }
     });
-
-    // PATCH to mark product as featured
-    app.patch("/products/featured/:id", async (req, res) => {
-      const id = req.params.id;
-      const result = await productsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { isFeatured: true } }
-      );
-      res.send(result);
-    });
-
-    // Mark product as featured
-    // app.patch("/products/featured/:id", async (req, res) => {
-    //   const id = req.params.id;
-    //   const result = await productsCollection.updateOne(
-    //     { _id: new ObjectId(id) },
-    //     { $set: { isFeatured: true } }
-    //   );
-    //   res.send(result);
-    // });
 
     /* --- Reviews APIs --- */
 
@@ -362,14 +401,50 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/payment-history/:email", verifyFbToken, async (req, res) => {
-      const email = req.params.email;
-      const history = await paymentsCollection
-        .find({ userEmail: email })
-        .sort({ date: -1 })
-        .toArray();
-      res.send(history);
-    });
+    app.get(
+      "/payment-history/:email",
+      verifyFbToken,
+      verifyAdmin,
+      async (req, res) => {
+        const email = req.params.email;
+        const history = await paymentsCollection
+          .find({ userEmail: email })
+          .sort({ date: -1 })
+          .toArray();
+        res.send(history);
+      }
+    );
+
+    app.get(
+      "/admin/statistics",
+      verifyFbToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const totalProducts = await productsCollection.countDocuments();
+          const acceptedProducts = await productsCollection.countDocuments({
+            status: "accepted",
+          });
+          const pendingProducts = await productsCollection.countDocuments({
+            status: "pending",
+          });
+
+          const totalReviews = await reviewsCollection.countDocuments();
+          const totalUsers = await usersCollection.countDocuments();
+
+          res.send({
+            totalProducts,
+            acceptedProducts,
+            pendingProducts,
+            totalReviews,
+            totalUsers,
+          });
+        } catch (err) {
+          console.error(err);
+          res.status(500).send({ message: "Something went wrong" });
+        }
+      }
+    );
 
     await client.db("admin").command({ ping: 1 });
     console.log(
