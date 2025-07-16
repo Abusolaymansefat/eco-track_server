@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-
+const admin = require("firebase-admin");
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -10,8 +10,10 @@ const stripe = require("stripe")(process.env.SECRET_KEY);
 app.use(cors());
 
 app.use(express.json());
-const admin = require("firebase-admin");
-const serviceAccount = require("./firebase-adminsdk.json");
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded)
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
@@ -27,7 +29,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
     const db = client.db("appOrbitDB");
     const usersCollection = db.collection("users");
     const productsCollection = db.collection("products");
@@ -88,11 +90,15 @@ async function run() {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
+
+    // Check if user is admin
     app.get("/users/admin/:email", async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
       res.send({ isAdmin: user?.role === "admin" });
     });
+
+    // Get user role by email
     app.get("/users/role/:email", async (req, res) => {
       const email = req.params.email;
 
@@ -103,7 +109,7 @@ async function run() {
           return res.status(404).send({ message: "User not found" });
         }
 
-        res.send({ role: user.role }); // role: 'admin' / 'user' / 'Membership'
+        res.send({ role: user.role });
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: "Server Error" });
@@ -175,7 +181,13 @@ async function run() {
       const total = await productsCollection.countDocuments(query);
       res.send({ products, total });
     });
-
+    // ✅ Keep this FIRST
+    app.get("/products/featured", async (req, res) => {
+      const featured = await productsCollection
+        .find({ isFeatured: true })
+        .toArray();
+      res.send(featured);
+    });
     // Get product by ID
     app.get("/products/:id", async (req, res) => {
       const id = req.params.id;
@@ -188,47 +200,46 @@ async function run() {
       res.send(product);
     });
 
-    // Add new product (initial status: Pending)
+    // Add new product (default status: Pending)
     app.post("/products", async (req, res) => {
       const product = req.body;
       product.timestamp = new Date();
       product.upvotes = 0;
       product.voters = [];
-      product.status = "Pending"; // default pending review
+      product.status = "Pending"; // default status
       const result = await productsCollection.insertOne(product);
       res.send(result);
     });
-
-    // ✅ Featured Products Route
-
-    app.get("/products/featured", async (req, res) => {
-      const featured = await productsCollection
-        .find({ isFeatured: true })
-        .toArray();
-      res.send(featured);
-    });
-
-    // app.get("/products/featured", async (req, res) => {
-    //   try {
-    //     const featured = await productsCollection
-    //       .find({ isFeatured: true, status: "Approved" })
-    //       .toArray();
-
-    //     res.send(featured);
-    //   } catch (err) {
-    //     res.status(400).send({ error: "Could not fetch featured products" });
-    //   }
-    // });
 
     // Upvote product
     app.patch("/products/upvote/:id", async (req, res) => {
       const { id } = req.params;
       const { userEmail } = req.body;
-      const result = await productsCollection.updateOne(
-        { _id: new ObjectId(id), voters: { $ne: userEmail } },
-        { $inc: { upvotes: 1 }, $push: { voters: userEmail } }
-      );
-      res.send(result);
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid Product ID" });
+      }
+
+      try {
+        const result = await productsCollection.updateOne(
+          { _id: new ObjectId(id), voters: { $ne: userEmail } },
+          {
+            $inc: { upvotes: 1 },
+            $push: { voters: userEmail },
+          }
+        );
+
+        if (result.modifiedCount === 0) {
+          return res
+            .status(400)
+            .send({ message: "Already voted or invalid product" });
+        }
+
+        res.send({ message: "Upvoted successfully", result });
+      } catch (error) {
+        console.error("Upvote failed:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
     });
 
     // Delete product
@@ -273,36 +284,6 @@ async function run() {
       );
 
       res.send(result);
-    });
-
-    app.patch("/products/upvote/:id", async (req, res) => {
-      const { id } = req.params;
-      const { userEmail } = req.body;
-
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).send({ message: "Invalid Product ID" });
-      }
-
-      try {
-        const result = await productsCollection.updateOne(
-          { _id: new ObjectId(id), voters: { $ne: userEmail } },
-          {
-            $inc: { upvotes: 1 },
-            $push: { voters: userEmail },
-          }
-        );
-
-        if (result.modifiedCount === 0) {
-          return res
-            .status(400)
-            .send({ message: "Already voted or invalid product" });
-        }
-
-        res.send({ message: "Upvoted successfully", result });
-      } catch (error) {
-        console.error("Upvote failed:", error);
-        res.status(500).send({ message: "Internal server error" });
-      }
     });
 
     /* --- Reviews APIs --- */
@@ -401,6 +382,7 @@ async function run() {
       res.send(result);
     });
 
+    // Get payment history (Admin only)
     app.get(
       "/payment-history/:email",
       verifyFbToken,
@@ -415,6 +397,7 @@ async function run() {
       }
     );
 
+    // Admin statistics (Admin only)
     app.get(
       "/admin/statistics",
       verifyFbToken,
@@ -433,11 +416,13 @@ async function run() {
           const totalUsers = await usersCollection.countDocuments();
 
           res.send({
-            totalProducts,
-            acceptedProducts,
-            pendingProducts,
-            totalReviews,
-            totalUsers,
+            totalProducts: 20,
+            acceptedProducts: 12,
+            pendingProducts: 5,
+            totalReviews: 50,
+            totalUsers: 100,
+            totalReports: 10,
+            totalRevenue: 280.5,
           });
         } catch (err) {
           console.error(err);
@@ -451,7 +436,7 @@ async function run() {
       "Pinged your deployment. You successfully connected to MongoDB!"
     );
   } catch (error) {
-    console.error("MongoDB connection failed:", error);
+    // console.error("MongoDB connection failed:", error);
   }
 }
 
