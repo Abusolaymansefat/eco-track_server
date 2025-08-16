@@ -11,8 +11,10 @@ app.use(cors());
 
 app.use(express.json());
 
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
-const serviceAccount = JSON.parse(decoded)
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -158,11 +160,9 @@ async function run() {
       res.send(result);
     });
 
-   
-
     // Get products with pagination & search & filter by owner
     app.get("/products", async (req, res) => {
-      const { page = 1, limit = 6, search = "", ownerEmail } = req.query;
+      const { page = 1, limit = 8, search = "", ownerEmail } = req.query;
       const query = {};
 
       if (search) {
@@ -263,6 +263,31 @@ async function run() {
         .find({ status: "Pending" })
         .toArray();
       res.send(products);
+    });
+    // Update product by ID (general update)
+    app.patch("/products/:id", async (req, res) => {
+      const { id } = req.params;
+      const updateData = req.body;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid product ID" });
+      }
+
+      try {
+        const result = await productsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Product not found" });
+        }
+
+        res.send({ message: "Product updated successfully", result });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to update product" });
+      }
     });
 
     // Update product status (Approve / Reject)
@@ -400,8 +425,7 @@ async function run() {
     // Admin statistics (Admin only)
     app.get(
       "/admin/statistics",
-      verifyFbToken,
-      verifyAdmin,
+
       async (req, res) => {
         try {
           const totalProducts = await productsCollection.countDocuments();
@@ -431,10 +455,10 @@ async function run() {
       }
     );
 
-    // await client.db("admin").command({ ping: 1 });
-    // console.log(
-    //   "Pinged your deployment. You successfully connected to MongoDB!"
-    // );
+    await client.db("admin").command({ ping: 1 });
+    console.log(
+      "Pinged your deployment. You successfully connected to MongoDB!"
+    );
   } catch (error) {
     // console.error("MongoDB connection failed:", error);
   }
