@@ -423,38 +423,63 @@ async function run() {
       }
     );
 
-    // Admin statistics (Admin only)
-    app.get(
-      "/admin/statistics",
+   /* ================= ADMIN STATS ================= */
+  app.get("/admin/statistics", async (req, res) => {
+    const totalProducts = await productsCollection.countDocuments();
+    const acceptedProducts = await productsCollection.countDocuments({ status: "Approved" });
+    const pendingProducts = await productsCollection.countDocuments({ status: "Pending" });
+    const totalUsers = await usersCollection.countDocuments();
+    const totalReviews = await reviewsCollection.countDocuments();
+    const totalReports = await reportsCollection.countDocuments();
 
-      async (req, res) => {
-        try {
-          const totalProducts = await productsCollection.countDocuments();
-          const acceptedProducts = await productsCollection.countDocuments({
-            status: "accepted",
-          });
-          const pendingProducts = await productsCollection.countDocuments({
-            status: "pending",
-          });
+    const revenueAgg = await paymentsCollection.aggregate([
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]).toArray();
 
-          const totalReviews = await reviewsCollection.countDocuments();
-          const totalUsers = await usersCollection.countDocuments();
+    res.send({
+      totalProducts,
+      acceptedProducts,
+      pendingProducts,
+      totalUsers,
+      totalReviews,
+      totalReports,
+      totalRevenue: revenueAgg[0]?.total || 0,
+    });
+  });
 
-          res.send({
-            totalProducts: 20,
-            acceptedProducts: 12,
-            pendingProducts: 5,
-            totalReviews: 50,
-            totalUsers: 100,
-            totalReports: 10,
-            totalRevenue: 280.5,
-          });
-        } catch (err) {
-          console.error(err);
-          res.status(500).send({ message: "Something went wrong" });
-        }
-      }
-    );
+  /* ================= ADMIN ANALYTICS (CHARTS) ================= */
+  app.get("/admin/analytics", async (req, res) => {
+    const { metric, range } = req.query;
+    let days = range === "year" ? 365 : range === "month" ? 30 : 7;
+
+    const from = new Date();
+    from.setDate(from.getDate() - days);
+
+    let collection, sumField;
+    if (metric === "revenue") {
+      collection = paymentsCollection;
+      sumField = "$amount";
+    } else if (metric === "products") {
+      collection = productsCollection;
+    } else if (metric === "users") {
+      collection = usersCollection;
+    } else return res.status(400).send({ message: "Invalid metric" });
+
+    const data = await collection.aggregate([
+      { $match: { createdAt: { $gte: from } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          value: sumField ? { $sum: sumField } : { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]).toArray();
+
+    res.send(data.map((d) => ({ label: d._id, value: d.value })));
+  });
+
+
 
     await client.db("admin").command({ ping: 1 });
     console.log(
