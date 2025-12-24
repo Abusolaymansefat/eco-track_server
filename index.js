@@ -76,6 +76,53 @@ async function run() {
       res.send(users);
     });
 
+
+    // GET users with pagination, search & role filter
+    app.get("/users", async (req, res) => {
+      try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const search = req.query.search || "";
+        const role = req.query.role || "all";
+
+        const query = {};
+
+        // 🔍 Search by name or email
+        if (search) {
+          query.$or = [
+            { name: { $regex: search, $options: "i" } },
+            { email: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        // 🎯 Role filter
+        if (role !== "all") {
+          query.role = role;
+        }
+
+        const skip = (page - 1) * limit;
+
+        const users = await usersCollection
+          .find(query)
+          .skip(skip)
+          .limit(limit)
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        const total = await usersCollection.countDocuments(query);
+
+        res.send({
+          users,
+          total,
+          page,
+          totalPages: Math.ceil(total / limit),
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch users" });
+      }
+    });
+
+
     // Get single user by email
     app.get("/user/:email", async (req, res) => {
       const email = req.params.email;
@@ -93,6 +140,24 @@ async function run() {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+
+      const existingUser = await usersCollection.findOne({ email: user.email });
+      if (existingUser) {
+        return res.status(409).send({ message: "User already exists" });
+      }
+
+      const result = await usersCollection.insertOne({
+        ...user,
+        role: "user",
+        isSubscribed: false,
+        createdAt: new Date(),
+      });
+
+      res.send(result);
+    });
+
 
     // Check if user is admin
     app.get("/users/admin/:email", async (req, res) => {
@@ -103,21 +168,29 @@ async function run() {
 
     // Get user role by email
     app.get("/users/role/:email", async (req, res) => {
-      const email = req.params.email;
-
-      try {
-        const user = await usersCollection.findOne({ email });
-
-        if (!user) {
-          return res.status(404).send({ message: "User not found" });
-        }
-
-        res.send({ role: user.role });
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Server Error" });
-      }
+      const user = await usersCollection.findOne({ email: req.params.email });
+      if (!user) return res.status(404).send({ message: "User not found" });
+      res.send({ role: user.role || "user" });
     });
+
+
+    app.patch("/users/role/:email", async (req, res) => {
+      const email = req.params.email;
+      const { role } = req.body;
+
+      const allowedRoles = ["user", "admin", "membership"];
+      if (!allowedRoles.includes(role)) {
+        return res.status(400).send({ message: "Invalid role" });
+      }
+
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { role } }
+      );
+
+      res.send(result);
+    });
+
 
     // Make user admin
     app.patch("/users/admin/:email", async (req, res) => {
@@ -129,27 +202,27 @@ async function run() {
       res.send(result);
     });
 
+
     // Remove admin role
     app.patch("/users/remove-admin/:email", async (req, res) => {
-      const email = req.params.email;
-      const user = await usersCollection.findOne({ email });
+      const user = await usersCollection.findOne({ email: req.params.email });
       if (!user) return res.status(404).send({ message: "User not found" });
-      if (user.role !== "admin")
-        return res.send({ message: "User is not an admin" });
 
       const result = await usersCollection.updateOne(
-        { email },
-        { $unset: { role: "" } }
+        { email: req.params.email },
+        { $set: { role: "user" } }
       );
-      res.send({ message: "Admin role removed", result });
+
+      res.send(result);
     });
+
 
     // Update subscription status
     app.patch("/subscribe/:email", async (req, res) => {
-      const { email } = req.params;
       const { isSubscribed, role, coupon } = req.body;
+
       const result = await usersCollection.updateOne(
-        { email },
+        { email: req.params.email },
         {
           $set: {
             isSubscribed: isSubscribed || false,
@@ -158,8 +231,10 @@ async function run() {
           },
         }
       );
+
       res.send(result);
     });
+
 
     // Get products with pagination & search & filter by owner
     app.get("/products", async (req, res) => {
@@ -423,61 +498,61 @@ async function run() {
       }
     );
 
-   /* ================= ADMIN STATS ================= */
-  app.get("/admin/statistics", async (req, res) => {
-    const totalProducts = await productsCollection.countDocuments();
-    const acceptedProducts = await productsCollection.countDocuments({ status: "Approved" });
-    const pendingProducts = await productsCollection.countDocuments({ status: "Pending" });
-    const totalUsers = await usersCollection.countDocuments();
-    const totalReviews = await reviewsCollection.countDocuments();
-    const totalReports = await reportsCollection.countDocuments();
+    /* ================= ADMIN STATS ================= */
+    app.get("/admin/statistics", async (req, res) => {
+      const totalProducts = await productsCollection.countDocuments();
+      const acceptedProducts = await productsCollection.countDocuments({ status: "Approved" });
+      const pendingProducts = await productsCollection.countDocuments({ status: "Pending" });
+      const totalUsers = await usersCollection.countDocuments();
+      const totalReviews = await reviewsCollection.countDocuments();
+      const totalReports = await reportsCollection.countDocuments();
 
-    const revenueAgg = await paymentsCollection.aggregate([
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]).toArray();
+      const revenueAgg = await paymentsCollection.aggregate([
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]).toArray();
 
-    res.send({
-      totalProducts,
-      acceptedProducts,
-      pendingProducts,
-      totalUsers,
-      totalReviews,
-      totalReports,
-      totalRevenue: revenueAgg[0]?.total || 0,
+      res.send({
+        totalProducts,
+        acceptedProducts,
+        pendingProducts,
+        totalUsers,
+        totalReviews,
+        totalReports,
+        totalRevenue: revenueAgg[0]?.total || 0,
+      });
     });
-  });
 
-  /* ================= ADMIN ANALYTICS (CHARTS) ================= */
-  app.get("/admin/analytics", async (req, res) => {
-    const { metric, range } = req.query;
-    let days = range === "year" ? 365 : range === "month" ? 30 : 7;
+    /* ================= ADMIN ANALYTICS (CHARTS) ================= */
+    app.get("/admin/analytics", async (req, res) => {
+      const { metric, range } = req.query;
+      let days = range === "year" ? 365 : range === "month" ? 30 : 7;
 
-    const from = new Date();
-    from.setDate(from.getDate() - days);
+      const from = new Date();
+      from.setDate(from.getDate() - days);
 
-    let collection, sumField;
-    if (metric === "revenue") {
-      collection = paymentsCollection;
-      sumField = "$amount";
-    } else if (metric === "products") {
-      collection = productsCollection;
-    } else if (metric === "users") {
-      collection = usersCollection;
-    } else return res.status(400).send({ message: "Invalid metric" });
+      let collection, sumField;
+      if (metric === "revenue") {
+        collection = paymentsCollection;
+        sumField = "$amount";
+      } else if (metric === "products") {
+        collection = productsCollection;
+      } else if (metric === "users") {
+        collection = usersCollection;
+      } else return res.status(400).send({ message: "Invalid metric" });
 
-    const data = await collection.aggregate([
-      { $match: { createdAt: { $gte: from } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          value: sumField ? { $sum: sumField } : { $sum: 1 },
+      const data = await collection.aggregate([
+        { $match: { createdAt: { $gte: from } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+            value: sumField ? { $sum: sumField } : { $sum: 1 },
+          },
         },
-      },
-      { $sort: { _id: 1 } },
-    ]).toArray();
+        { $sort: { _id: 1 } },
+      ]).toArray();
 
-    res.send(data.map((d) => ({ label: d._id, value: d.value })));
-  });
+      res.send(data.map((d) => ({ label: d._id, value: d.value })));
+    });
 
 
 
