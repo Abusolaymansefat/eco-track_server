@@ -4,3 +4,4 @@ dotenv
 firebase-adminsdk.json
 vercel
 .vercel
+.env*.local
